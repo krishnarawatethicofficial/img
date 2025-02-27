@@ -1,10 +1,154 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <!-- Existing HTML head content unchanged -->
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Apple-Like Image Processing</title>
+  <style>
+    body {
+      font-family: "Segoe UI", sans-serif;
+      text-align: center;
+      margin: 0;
+      padding: 20px;
+      background: linear-gradient(135deg, #f5f7fa, #c3cfe2);
+      color: #333;
+    }
+    h1 {
+      margin-bottom: 10px;
+      font-size: 2em;
+    }
+    input[type="file"] {
+      margin-bottom: 10px;
+    }
+    button {
+      margin: 5px;
+      padding: 10px 20px;
+      font-size: 14px;
+      border: none;
+      border-radius: 4px;
+      background-color: #3498db;
+      color: #fff;
+      cursor: pointer;
+      transition: background-color 0.2s ease;
+    }
+    button:hover:not(.disabled) {
+      background-color: #2980b9;
+    }
+    button.disabled {
+      opacity: 0.5;
+      pointer-events: none;
+    }
+    #controls {
+      margin: 20px auto;
+      max-width: 600px;
+      text-align: left;
+      background: #fff;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1);
+    }
+    #controls div {
+      margin: 15px 0;
+    }
+    #controls label {
+      display: inline-block;
+      width: 200px;
+      font-weight: 600;
+    }
+    #controls input[type="range"] {
+      width: 60%;
+      vertical-align: middle;
+    }
+    #controls span {
+      margin-left: 10px;
+      font-weight: 500;
+    }
+    #loading {
+      display: none;
+      font-size: 18px;
+      color: #3498db;
+      margin-top: 20px;
+    }
+    .canvas-container {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 20px;
+      margin-top: 20px;
+    }
+    canvas {
+      border: 2px solid #ddd;
+      border-radius: 4px;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+      max-width: 100%;
+    }
+    #comparison {
+      position: relative;
+      display: inline-block;
+    }
+    #comparison input[type="range"] {
+      position: absolute;
+      width: 100%;
+      top: 50%;
+      transform: translateY(-50%);
+      opacity: 0.8;
+    }
+  </style>
 </head>
 <body>
-  <!-- Existing HTML body content unchanged -->
+  <h1>Apple-Like Image Processing</h1>
+  <input type="file" id="fileInput" accept="image/*" />
+  <br />
+  <button id="processButton">Process Image</button>
+  <button id="downloadButton" class="disabled">Download Processed Image</button>
+  <button id="resetButton">Reset Parameters</button>
+  <label style="margin-left: 10px;">
+    <input type="checkbox" id="realtimeCheckbox" /> Real-time Preview
+  </label>
+
+  <div id="controls">
+    <div>
+      <label for="sigmaDInput">Bilateral Sigma D:</label>
+      <input type="range" id="sigmaDInput" min="0.1" max="5.0" step="0.1" value="1.5" />
+      <span id="sigmaDValue">1.5</span>
+    </div>
+    <div>
+      <label for="sigmaCInput">Bilateral Sigma C:</label>
+      <input type="range" id="sigmaCInput" min="0.01" max="1.0" step="0.01" value="0.1" />
+      <span id="sigmaCValue">0.1</span>
+    </div>
+    <div>
+      <label for="unsharpInput">Unsharp Amount:</label>
+      <input type="range" id="unsharpInput" min="0.5" max="3.0" step="0.1" value="1.5" />
+      <span id="unsharpValue">1.5</span>
+    </div>
+    <div>
+      <label for="blurSigmaInput">Blur Sigma:</label>
+      <input type="range" id="blurSigmaInput" min="0.1" max="5.0" step="0.1" value="1.0" />
+      <span id="blurSigmaValue">1.0</span>
+    </div>
+    <div>
+      <label for="gammaInput">Gamma Correction:</label>
+      <input type="range" id="gammaInput" min="0.1" max="3.0" step="0.1" value="1.0" />
+      <span id="gammaValue">1.0</span>
+    </div>
+  </div>
+
+  <div class="canvas-container">
+    <div>
+      <h2>Original Image</h2>
+      <canvas id="canvas1"></canvas>
+    </div>
+    <div>
+      <h2>Processed Image</h2>
+      <div id="comparison">
+        <canvas id="canvas2"></canvas>
+        <input type="range" id="compareSlider" min="0" max="100" value="100" style="display: none;" />
+      </div>
+    </div>
+  </div>
+  <div id="loading">Processing...</div>
+
   <script>
     // Constants
     const DEFAULTS = {
@@ -12,398 +156,390 @@
       SIGMA_C: 0.1,
       UNSHARP_AMOUNT: 1.5,
       BLUR_SIGMA: 1.0,
-      GAMMA: 1.0,
-      MAX_PREVIEW_SIZE: 1024
+      GAMMA: 1.0
     };
-
-    // Shader sources
-    const SHADERS = {
-      vertex: `
-        attribute vec2 a_position;
-        attribute vec2 a_texCoord;
-        varying vec2 v_texCoord;
-        void main() {
-          gl_Position = vec4(a_position, 0.0, 1.0);
-          v_texCoord = a_texCoord;
-        }
-      `,
-      bilateral: `
-        precision mediump float;
-        uniform sampler2D u_texture;
-        uniform vec2 u_texSize;
-        uniform float u_sigmaD;
-        uniform float u_sigmaC;
-        varying vec2 v_texCoord;
-        void main() {
-          // Bilateral filter implementation
-          vec4 center = texture2D(u_texture, v_texCoord);
-          vec4 sum = vec4(0.0);
-          float totalWeight = 0.0;
-          float dFactor = 1.0 / (2.0 * u_sigmaD * u_sigmaD);
-          float cFactor = 1.0 / (2.0 * u_sigmaC * u_sigmaC);
-          for (int i = -2; i <= 2; i++) {
-            for (int j = -2; j <= 2; j++) {
-              vec2 offset = vec2(float(i), float(j)) / u_texSize;
-              vec4 neighbor = texture2D(u_texture, v_texCoord + offset);
-              float d = float(i * i + j * j);
-              vec3 colorDiff = center.rgb - neighbor.rgb;
-              float c = dot(colorDiff, colorDiff);
-              float weight = exp(-d * dFactor) * exp(-c * cFactor);
-              sum += neighbor * weight;
-              totalWeight += weight;
-            }
-          }
-          gl_FragColor = sum / totalWeight;
-        }
-      `,
-      blur: `
-        precision mediump float;
-        uniform sampler2D u_texture;
-        uniform vec2 u_texSize;
-        uniform float u_sigma;
-        varying vec2 v_texCoord;
-        void main() {
-          // Gaussian blur (configurable direction)
-          vec4 sum = vec4(0.0);
-          float totalWeight = 0.0;
-          float dFactor = 1.0 / (2.0 * u_sigma * u_sigma);
-          for (int i = -2; i <= 2; i++) {
-            vec2 offset = vec2(float(i), 0.0) / u_texSize; // Horizontal by default
-            float d = float(i * i);
-            float weight = exp(-d * dFactor);
-            sum += texture2D(u_texture, v_texCoord + offset) * weight;
-            totalWeight += weight;
-          }
-          gl_FragColor = sum / totalWeight;
-        }
-      `,
-      unsharp: `
-        precision mediump float;
-        uniform sampler2D u_original;
-        uniform sampler2D u_blurred;
-        uniform float u_amount;
-        varying vec2 v_texCoord;
-        void main() {
-          vec4 orig = texture2D(u_original, v_texCoord);
-          vec4 blur = texture2D(u_blurred, v_texCoord);
-          gl_FragColor = clamp(orig + u_amount * (orig - blur), 0.0, 1.0);
-        }
-      `,
-      color: `
-        precision mediump float;
-        uniform sampler2D u_texture;
-        uniform vec3 u_minVal;
-        uniform vec3 u_maxVal;
-        uniform float u_gamma;
-        varying vec2 v_texCoord;
-        void main() {
-          vec4 color = texture2D(u_texture, v_texCoord);
-          vec3 corrected = clamp((color.rgb - u_minVal) / (u_maxVal - u_minVal), 0.0, 1.0);
-          corrected = pow(corrected, vec3(1.0 / u_gamma));
-          gl_FragColor = vec4(corrected, color.a);
-        }
-      `,
-      compare: `
-        precision mediump float;
-        uniform sampler2D u_original;
-        uniform sampler2D u_processed;
-        uniform float u_split;
-        varying vec2 v_texCoord;
-        void main() {
-          gl_FragColor = v_texCoord.x < u_split ? texture2D(u_original, v_texCoord) : texture2D(u_processed, v_texCoord);
-        }
-      `
-    };
+    const MAX_PREVIEW_SIZE = 1024;
 
     // DOM Elements
-    const DOM = {
-      fileInput: document.getElementById('fileInput'),
-      processButton: document.getElementById('processButton'),
-      downloadButton: document.getElementById('downloadButton'),
-      resetButton: document.getElementById('resetButton'),
-      realtimeCheckbox: document.getElementById('realtimeCheckbox'),
-      canvas1: document.getElementById('canvas1'),
-      canvas2: document.getElementById('canvas2'),
-      loading: document.getElementById('loading'),
-      compareSlider: document.getElementById('compareSlider'),
-      controls: {
-        sigmaD: { input: document.getElementById('sigmaDInput'), value: document.getElementById('sigmaDValue') },
-        sigmaC: { input: document.getElementById('sigmaCInput'), value: document.getElementById('sigmaCValue') },
-        unsharp: { input: document.getElementById('unsharpInput'), value: document.getElementById('unsharpValue') },
-        blurSigma: { input: document.getElementById('blurSigmaInput'), value: document.getElementById('blurSigmaValue') },
-        gamma: { input: document.getElementById('gammaInput'), value: document.getElementById('gammaValue') }
-      }
+    const fileInput = document.getElementById('fileInput');
+    const processButton = document.getElementById('processButton');
+    const downloadButton = document.getElementById('downloadButton');
+    const resetButton = document.getElementById('resetButton');
+    const realtimeCheckbox = document.getElementById('realtimeCheckbox');
+    const canvas1 = document.getElementById('canvas1');
+    const canvas2 = document.getElementById('canvas2');
+    const loading = document.getElementById('loading');
+    const compareSlider = document.getElementById('compareSlider');
+    const controls = {
+      sigmaD: { input: document.getElementById('sigmaDInput'), value: document.getElementById('sigmaDValue') },
+      sigmaC: { input: document.getElementById('sigmaCInput'), value: document.getElementById('sigmaCValue') },
+      unsharp: { input: document.getElementById('unsharpInput'), value: document.getElementById('unsharpValue') },
+      blurSigma: { input: document.getElementById('blurSigmaInput'), value: document.getElementById('blurSigmaValue') },
+      gamma: { input: document.getElementById('gammaInput'), value: document.getElementById('gammaValue') }
     };
 
-    // State
-    let originalImage = null;
-    let processingTimeout = null;
-    let glContext = null;
-    let shaderPrograms = {};
-    let textures = {};
-    let framebuffers = {};
+    let gl, programs = {}, originalImage, processingTimeout;
+    // Declare textures and framebuffers globally
+    let textures, framebuffers;
 
     // Initialize UI
-    function initUI() {
-      Object.values(DOM.controls).forEach(({ input, value }) => {
-        input.addEventListener('input', () => {
-          value.textContent = input.value;
-          if (DOM.realtimeCheckbox.checked && originalImage) debounceProcess();
-        });
+    Object.keys(controls).forEach(key => {
+      const { input, value } = controls[key];
+      input.addEventListener('input', () => {
+        value.textContent = input.value;
+        if (realtimeCheckbox.checked && originalImage) debounceProcess();
       });
+    });
 
-      DOM.resetButton.addEventListener('click', resetParameters);
-      DOM.fileInput.addEventListener('change', loadImage);
-      DOM.processButton.addEventListener('click', () => originalImage && processImage());
-      DOM.downloadButton.addEventListener('click', downloadImage);
-    }
-
-    function resetParameters() {
-      DOM.controls.sigmaD.input.value = DEFAULTS.SIGMA_D;
-      DOM.controls.sigmaC.input.value = DEFAULTS.SIGMA_C;
-      DOM.controls.unsharp.input.value = DEFAULTS.UNSHARP_AMOUNT;
-      DOM.controls.blurSigma.input.value = DEFAULTS.BLUR_SIGMA;
-      DOM.controls.gamma.input.value = DEFAULTS.GAMMA;
-      updateControlValues();
+    resetButton.addEventListener('click', () => {
+      controls.sigmaD.input.value = DEFAULTS.SIGMA_D;
+      controls.sigmaC.input.value = DEFAULTS.SIGMA_C;
+      controls.unsharp.input.value = DEFAULTS.UNSHARP_AMOUNT;
+      controls.blurSigma.input.value = DEFAULTS.BLUR_SIGMA;
+      controls.gamma.input.value = DEFAULTS.GAMMA;
+      Object.values(controls).forEach(({ input, value }) => value.textContent = input.value);
       if (originalImage) processImage();
-    }
+    });
 
-    function updateControlValues() {
-      Object.values(DOM.controls).forEach(({ input, value }) => value.textContent = input.value);
-    }
+    // Vertex shader (same for all passes)
+    const vertexShaderSrc = `
+      attribute vec2 a_position;
+      attribute vec2 a_texCoord;
+      varying vec2 v_texCoord;
+      void main() {
+        gl_Position = vec4(a_position, 0.0, 1.0);
+        v_texCoord = a_texCoord;
+      }
+    `;
 
-    // Image Loading
-    function loadImage(e) {
+    // Fragment shaders
+    const bilateralFragSrc = `
+      precision mediump float;
+      uniform sampler2D u_texture;
+      uniform vec2 u_texSize;
+      uniform float u_sigmaD;
+      uniform float u_sigmaC;
+      varying vec2 v_texCoord;
+      void main() {
+        vec4 center = texture2D(u_texture, v_texCoord);
+        vec4 sum = vec4(0.0);
+        float totalWeight = 0.0;
+        float dFactor = 1.0 / (2.0 * u_sigmaD * u_sigmaD);
+        float cFactor = 1.0 / (2.0 * u_sigmaC * u_sigmaC);
+        for (int i = -2; i <= 2; i++) {
+          for (int j = -2; j <= 2; j++) {
+            vec2 offset = vec2(float(i), float(j)) / u_texSize;
+            vec4 neighbor = texture2D(u_texture, v_texCoord + offset);
+            float d = float(i * i + j * j);
+            vec3 colorDiff = center.rgb - neighbor.rgb;
+            float c = dot(colorDiff, colorDiff);
+            float weight = exp(-d * dFactor) * exp(-c * cFactor);
+            sum += neighbor * weight;
+            totalWeight += weight;
+          }
+        }
+        gl_FragColor = sum / totalWeight;
+      }
+    `;
+
+    const blurFragSrc = `
+      precision mediump float;
+      uniform sampler2D u_texture;
+      uniform vec2 u_texSize;
+      uniform float u_sigma;
+      varying vec2 v_texCoord;
+      void main() {
+        vec4 sum = vec4(0.0);
+        float totalWeight = 0.0;
+        float dFactor = 1.0 / (2.0 * u_sigma * u_sigma);
+        for (int i = -2; i <= 2; i++) {
+          vec2 offset = vec2(float(i), 0.0) / u_texSize;
+          float d = float(i * i);
+          float weight = exp(-d * dFactor);
+          sum += texture2D(u_texture, v_texCoord + offset) * weight;
+          totalWeight += weight;
+        }
+        gl_FragColor = sum / totalWeight;
+      }
+    `;
+
+    const unsharpFragSrc = `
+      precision mediump float;
+      uniform sampler2D u_original;
+      uniform sampler2D u_blurred;
+      uniform float u_amount;
+      varying vec2 v_texCoord;
+      void main() {
+        vec4 orig = texture2D(u_original, v_texCoord);
+        vec4 blur = texture2D(u_blurred, v_texCoord);
+        gl_FragColor = clamp(orig + u_amount * (orig - blur), 0.0, 1.0);
+      }
+    `;
+
+    const colorFragSrc = `
+      precision mediump float;
+      uniform sampler2D u_texture;
+      uniform vec3 u_minVal;
+      uniform vec3 u_maxVal;
+      uniform float u_gamma;
+      varying vec2 v_texCoord;
+      void main() {
+        vec4 color = texture2D(u_texture, v_texCoord);
+        vec3 corrected = clamp((color.rgb - u_minVal) / (u_maxVal - u_minVal), 0.0, 1.0);
+        corrected = pow(corrected, vec3(1.0 / u_gamma));
+        gl_FragColor = vec4(corrected, color.a);
+      }
+    `;
+
+    const compareFragSrc = `
+      precision mediump float;
+      uniform sampler2D u_original;
+      uniform sampler2D u_processed;
+      uniform float u_split;
+      varying vec2 v_texCoord;
+      void main() {
+        if (v_texCoord.x < u_split) {
+          gl_FragColor = texture2D(u_original, v_texCoord);
+        } else {
+          gl_FragColor = texture2D(u_processed, v_texCoord);
+        }
+      }
+    `;
+
+    // Load image
+    fileInput.addEventListener("change", (e) => {
       const file = e.target.files[0];
       if (!file) return;
       const reader = new FileReader();
       reader.onload = (event) => {
         const img = new Image();
         img.onload = () => {
-          const { width, height } = scaleDimensions(img.width, img.height, DEFAULTS.MAX_PREVIEW_SIZE);
-          DOM.canvas1.width = width;
-          DOM.canvas1.height = height;
-          DOM.canvas1.getContext('2d').drawImage(img, 0, 0, width, height);
+          const { width, height } = scaleDimensions(img.width, img.height, MAX_PREVIEW_SIZE);
+          canvas1.width = width;
+          canvas1.height = height;
+          canvas1.getContext("2d").drawImage(img, 0, 0, width, height);
           originalImage = img;
           processImage();
-          DOM.downloadButton.classList.remove('disabled');
-          DOM.compareSlider.style.display = 'block';
+          downloadButton.classList.remove("disabled");
+          compareSlider.style.display = "block";
         };
         img.src = event.target.result;
       };
       reader.readAsDataURL(file);
+    });
+
+    processButton.addEventListener("click", () => originalImage && processImage());
+    function debounceProcess() {
+      clearTimeout(processingTimeout);
+      processingTimeout = setTimeout(processImage, 300);
     }
 
-    // WebGL Initialization
-    function initWebGL() {
-      glContext = DOM.canvas2.getContext('webgl', { preserveDrawingBuffer: true });
-      if (!glContext) throw new Error('WebGL not supported');
+    function processImage() {
+      if (!originalImage) {
+        alert("Please upload an image first.");
+        return;
+      }
+      loading.style.display = "block";
+      const ctx = canvas1.getContext("2d", { willReadFrequently: true });
+      const imageData = ctx.getImageData(0, 0, canvas1.width, canvas1.height);
+      const { min, max } = computeMinMax(imageData);
 
-      DOM.canvas2.width = DOM.canvas1.width;
-      DOM.canvas2.height = DOM.canvas1.height;
-      glContext.viewport(0, 0, glContext.drawingBufferWidth, glContext.drawingBufferHeight);
+      // Initialize WebGL
+      gl = canvas2.getContext("webgl", { preserveDrawingBuffer: true });
+      if (!gl) {
+        alert("WebGL not supported");
+        loading.style.display = "none";
+        return;
+      }
+      canvas2.width = imageData.width;
+      canvas2.height = imageData.height;
+      gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
 
-      // Compile shaders
-      shaderPrograms = {
-        bilateral: createProgram(SHADERS.vertex, SHADERS.bilateral),
-        blurH: createProgram(SHADERS.vertex, SHADERS.blur),
-        blurV: createProgram(SHADERS.vertex, SHADERS.blur.replace('vec2(float(i), 0.0)', 'vec2(0.0, float(i))')),
-        unsharp: createProgram(SHADERS.vertex, SHADERS.unsharp),
-        color: createProgram(SHADERS.vertex, SHADERS.color),
-        compare: createProgram(SHADERS.vertex, SHADERS.compare)
-      };
+      // Compile shaders/programs
+      programs.bilateral = createProgram(vertexShaderSrc, bilateralFragSrc);
+      programs.blurH = createProgram(vertexShaderSrc, blurFragSrc);
+      programs.blurV = createProgram(vertexShaderSrc, blurFragSrc.replace("vec2(float(i), 0.0)", "vec2(0.0, float(i))"));
+      programs.unsharp = createProgram(vertexShaderSrc, unsharpFragSrc);
+      programs.color = createProgram(vertexShaderSrc, colorFragSrc);
+      programs.compare = createProgram(vertexShaderSrc, compareFragSrc);
 
-      // Setup quad
-      createQuadBuffer();
-      initTexturesAndFramebuffers();
-    }
+      const positionBuffer = createQuadBuffer();
 
-    function initTexturesAndFramebuffers() {
-      const width = DOM.canvas2.width;
-      const height = DOM.canvas2.height;
+      // Create textures and framebuffers globally.
       textures = {
-        original: createTexture(width, height),
-        temp1: createTexture(width, height),
-        temp2: createTexture(width, height),
-        processed: createTexture(width, height)
+        original: createTexture(imageData.width, imageData.height),
+        temp1: createTexture(imageData.width, imageData.height),
+        temp2: createTexture(imageData.width, imageData.height),
+        processed: createTexture(imageData.width, imageData.height)
       };
-      glContext.bindTexture(glContext.TEXTURE_2D, textures.original);
-      glContext.texImage2D(glContext.TEXTURE_2D, 0, glContext.RGBA, glContext.RGBA, glContext.UNSIGNED_BYTE, DOM.canvas1);
+
+      // Flip Y when uploading the original texture.
+      gl.bindTexture(gl.TEXTURE_2D, textures.original);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas1);
 
       framebuffers = {
         temp1: createFramebuffer(textures.temp1),
         temp2: createFramebuffer(textures.temp2),
         processed: createFramebuffer(textures.processed)
       };
-    }
 
-    // Image Processing
-    function processImage() {
-      if (!originalImage) {
-        alert('Please upload an image first.');
-        return;
-      }
+      const texSize = [imageData.width, imageData.height];
 
-      DOM.loading.style.display = 'block';
-      try {
-        const imageData = DOM.canvas1.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, DOM.canvas1.width, DOM.canvas1.height);
-        const { min, max } = computeMinMax(imageData);
-
-        initWebGL();
-        const texSize = [imageData.width, imageData.height];
-
-        // Processing pipeline
-        renderPass(shaderPrograms.bilateral, textures.original, framebuffers.temp1, {
-          u_texSize: texSize,
-          u_sigmaD: parseFloat(DOM.controls.sigmaD.input.value),
-          u_sigmaC: parseFloat(DOM.controls.sigmaC.input.value)
-        });
-
-        renderPass(shaderPrograms.blurH, textures.temp1, framebuffers.temp2, {
-          u_texSize: texSize,
-          u_sigma: parseFloat(DOM.controls.blurSigma.input.value)
-        });
-
-        renderPass(shaderPrograms.blurV, textures.temp2, framebuffers.temp1, {
-          u_texSize: texSize,
-          u_sigma: parseFloat(DOM.controls.blurSigma.input.value)
-        });
-
-        renderPass(shaderPrograms.unsharp, null, framebuffers.temp2, {
+      // Processing pipeline:
+      renderPass(programs.bilateral, textures.original, framebuffers.temp1, {
+        u_texSize: texSize,
+        u_sigmaD: parseFloat(controls.sigmaD.input.value),
+        u_sigmaC: parseFloat(controls.sigmaC.input.value)
+      });
+      renderPass(programs.blurH, textures.temp1, framebuffers.temp2, {
+        u_texSize: texSize,
+        u_sigma: parseFloat(controls.blurSigma.input.value)
+      });
+      renderPass(programs.blurV, textures.temp2, framebuffers.temp1, {
+        u_texSize: texSize,
+        u_sigma: parseFloat(controls.blurSigma.input.value)
+      });
+      renderPass(
+        programs.unsharp,
+        null,
+        framebuffers.temp2,
+        {
           u_original: textures.temp1,
           u_blurred: textures.temp1,
-          u_amount: parseFloat(DOM.controls.unsharp.input.value)
-        }, [0, 1]);
+          u_amount: parseFloat(controls.unsharp.input.value)
+        },
+        [0, 1]
+      );
+      renderPass(programs.color, textures.temp2, framebuffers.processed, {
+        u_minVal: min,
+        u_maxVal: max,
+        u_gamma: parseFloat(controls.gamma.input.value)
+      });
 
-        renderPass(shaderPrograms.color, textures.temp2, framebuffers.processed, {
-          u_minVal: min,
-          u_maxVal: max,
-          u_gamma: parseFloat(DOM.controls.gamma.input.value)
-        });
-
-        DOM.compareSlider.oninput = renderComparison;
-        renderComparison();
-      } catch (error) {
-        alert(`Processing failed: ${error.message}`);
-        console.error(error);
-      } finally {
-        DOM.loading.style.display = 'none';
-      }
+      // Final render with comparison
+      compareSlider.oninput = () => renderComparison();
+      renderComparison();
+      loading.style.display = "none";
     }
 
     function renderComparison() {
-      glContext.bindFramebuffer(glContext.FRAMEBUFFER, null);
-      glContext.useProgram(shaderPrograms.compare);
-      setupAttributes(shaderPrograms.compare);
-      glContext.activeTexture(glContext.TEXTURE0);
-      glContext.bindTexture(glContext.TEXTURE_2D, textures.original);
-      glContext.uniform1i(glContext.getUniformLocation(shaderPrograms.compare, 'u_original'), 0);
-      glContext.activeTexture(glContext.TEXTURE1);
-      glContext.bindTexture(glContext.TEXTURE_2D, textures.processed);
-      glContext.uniform1i(glContext.getUniformLocation(shaderPrograms.compare, 'u_processed'), 1);
-      glContext.uniform1f(glContext.getUniformLocation(shaderPrograms.compare, 'u_split'), DOM.compareSlider.value / 100);
-      glContext.drawArrays(glContext.TRIANGLES, 0, 6);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.useProgram(programs.compare);
+      setupAttributes(programs.compare);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, textures.original);
+      gl.uniform1i(gl.getUniformLocation(programs.compare, "u_original"), 0);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, textures.processed);
+      gl.uniform1i(gl.getUniformLocation(programs.compare, "u_processed"), 1);
+      gl.uniform1f(gl.getUniformLocation(programs.compare, "u_split"), compareSlider.value / 100);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
 
-    function debounceProcess() {
-      clearTimeout(processingTimeout);
-      processingTimeout = setTimeout(processImage, 300);
-    }
-
-    function downloadImage() {
-      const dataURL = DOM.canvas2.toDataURL('image/png');
-      const link = document.createElement('a');
-      link.download = 'processed-image.png';
+    downloadButton.addEventListener("click", () => {
+      const dataURL = canvas2.toDataURL("image/png");
+      const link = document.createElement("a");
+      link.download = "processed-image.png";
       link.href = dataURL;
       link.click();
-    }
+    });
 
-    // WebGL Helpers
+    // Helper functions
     function createShader(type, source) {
-      const shader = glContext.createShader(type);
-      glContext.shaderSource(shader, source);
-      glContext.compileShader(shader);
-      if (!glContext.getShaderParameter(shader, glContext.COMPILE_STATUS)) {
-        throw new Error(`Shader compilation failed: ${glContext.getShaderInfoLog(shader)}`);
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(shader));
+        gl.deleteShader(shader);
+        return null;
       }
       return shader;
     }
 
     function createProgram(vertexSrc, fragmentSrc) {
-      const vs = createShader(glContext.VERTEX_SHADER, vertexSrc);
-      const fs = createShader(glContext.FRAGMENT_SHADER, fragmentSrc);
-      const program = glContext.createProgram();
-      glContext.attachShader(program, vs);
-      glContext.attachShader(program, fs);
-      glContext.linkProgram(program);
-      if (!glContext.getProgramParameter(program, glContext.LINK_STATUS)) {
-        throw new Error(`Program linking failed: ${glContext.getProgramInfoLog(program)}`);
+      const vs = createShader(gl.VERTEX_SHADER, vertexSrc);
+      const fs = createShader(gl.FRAGMENT_SHADER, fragmentSrc);
+      const program = gl.createProgram();
+      gl.attachShader(program, vs);
+      gl.attachShader(program, fs);
+      gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        console.error(gl.getProgramInfoLog(program));
+        gl.deleteProgram(program);
+        return null;
       }
       return program;
     }
 
     function createTexture(width, height) {
-      const texture = glContext.createTexture();
-      glContext.bindTexture(glContext.TEXTURE_2D, texture);
-      glContext.texImage2D(glContext.TEXTURE_2D, 0, glContext.RGBA, width, height, 0, glContext.RGBA, glContext.UNSIGNED_BYTE, null);
-      glContext.texParameteri(glContext.TEXTURE_2D, glContext.TEXTURE_MIN_FILTER, glContext.LINEAR);
-      glContext.texParameteri(glContext.TEXTURE_2D, glContext.TEXTURE_WRAP_S, glContext.CLAMP_TO_EDGE);
-      glContext.texParameteri(glContext.TEXTURE_2D, glContext.TEXTURE_WRAP_T, glContext.CLAMP_TO_EDGE);
+      const texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       return texture;
     }
 
     function createFramebuffer(texture) {
-      const fb = glContext.createFramebuffer();
-      glContext.bindFramebuffer(glContext.FRAMEBUFFER, fb);
-      glContext.framebufferTexture2D(glContext.FRAMEBUFFER, glContext.COLOR_ATTACHMENT0, glContext.TEXTURE_2D, texture, 0);
+      const fb = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
       return fb;
     }
 
     function createQuadBuffer() {
-      const buffer = glContext.createBuffer();
-      glContext.bindBuffer(glContext.ARRAY_BUFFER, buffer);
-      glContext.bufferData(glContext.ARRAY_BUFFER, new Float32Array([
-        -1, -1, 0, 0,
-         1, -1, 1, 0,
-        -1,  1, 0, 1,
-        -1,  1, 0, 1,
-         1, -1, 1, 0,
-         1,  1, 1, 1
-      ]), glContext.STATIC_DRAW);
+      const buffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.bufferData(
+        gl.ARRAY_BUFFER,
+        new Float32Array([
+          -1, -1, 0, 0,
+           1, -1, 1, 0,
+          -1,  1, 0, 1,
+          -1,  1, 0, 1,
+           1, -1, 1, 0,
+           1,  1, 1, 1
+        ]),
+        gl.STATIC_DRAW
+      );
       return buffer;
     }
 
     function setupAttributes(program) {
-      const posLoc = glContext.getAttribLocation(program, 'a_position');
-      glContext.enableVertexAttribArray(posLoc);
-      glContext.vertexAttribPointer(posLoc, 2, glContext.FLOAT, false, 16, 0);
-      const texLoc = glContext.getAttribLocation(program, 'a_texCoord');
-      glContext.enableVertexAttribArray(texLoc);
-      glContext.vertexAttribPointer(texLoc, 2, glContext.FLOAT, false, 16, 8);
+      const posLoc = gl.getAttribLocation(program, "a_position");
+      gl.enableVertexAttribArray(posLoc);
+      gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 16, 0);
+      const texLoc = gl.getAttribLocation(program, "a_texCoord");
+      gl.enableVertexAttribArray(texLoc);
+      gl.vertexAttribPointer(texLoc, 2, gl.FLOAT, false, 16, 8);
     }
 
     function renderPass(program, inputTexture, framebuffer, uniforms, textureUnits = [0]) {
-      glContext.bindFramebuffer(glContext.FRAMEBUFFER, framebuffer);
-      glContext.useProgram(program);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+      gl.useProgram(program);
       setupAttributes(program);
-
       textureUnits.forEach((unit, idx) => {
-        glContext.activeTexture(glContext.TEXTURE0 + unit);
-        glContext.bindTexture(glContext.TEXTURE_2D, inputTexture && idx === 0 ? inputTexture : Object.values(uniforms)[idx]);
-        glContext.uniform1i(glContext.getUniformLocation(program, Object.keys(uniforms)[idx]), unit);
+        gl.activeTexture(gl.TEXTURE0 + unit);
+        gl.bindTexture(
+          gl.TEXTURE_2D,
+          inputTexture && idx === 0 ? inputTexture : Object.values(uniforms)[idx]
+        );
+        gl.uniform1i(gl.getUniformLocation(program, Object.keys(uniforms)[idx]), unit);
       });
-
       Object.entries(uniforms).forEach(([name, value]) => {
-        const loc = glContext.getUniformLocation(program, name);
-        if (name === 'u_texSize') glContext.uniform2fv(loc, value);
-        else if (name === 'u_minVal' || name === 'u_maxVal') glContext.uniform3fv(loc, value);
-        else if (!name.match(/u_(original|blurred|texture)/)) glContext.uniform1f(loc, value);
+        if (name.startsWith("u_texSize"))
+          gl.uniform2fv(gl.getUniformLocation(program, name), value);
+        else if (name.startsWith("u_min") || name.startsWith("u_max"))
+          gl.uniform3fv(gl.getUniformLocation(program, name), value);
+        else if (!name.match(/u_(original|blurred|texture)/))
+          gl.uniform1f(gl.getUniformLocation(program, name), value);
       });
-
-      glContext.drawArrays(glContext.TRIANGLES, 0, 6);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
 
-    // Utility Functions
     function computeMinMax(imageData) {
       const data = imageData.data;
       const hist = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)];
@@ -434,13 +570,9 @@
     function scaleDimensions(width, height, maxSize) {
       if (width <= maxSize && height <= maxSize) return { width, height };
       const aspect = width / height;
-      return width > height
-        ? { width: maxSize, height: Math.round(maxSize / aspect) }
-        : { width: Math.round(maxSize * aspect), height: maxSize };
+      if (width > height) return { width: maxSize, height: Math.round(maxSize / aspect) };
+      return { width: Math.round(maxSize * aspect), height: maxSize };
     }
-
-    // Start application
-    initUI();
   </script>
 </body>
 </html>
