@@ -140,6 +140,8 @@
     };
 
     let gl, programs = {}, originalImage, processingTimeout;
+    // Declare textures globally so they can be accessed in renderComparison
+    let textures, framebuffers;
 
     // Initialize UI
     Object.keys(controls).forEach(key => {
@@ -301,7 +303,7 @@
       }
 
       loading.style.display = 'block';
-      const imageData = canvas1.getContext('2d').getImageData(0, 0, canvas1.width, canvas1.height);
+      const imageData = canvas1.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, canvas1.width, canvas1.height);
       const { min, max } = computeMinMax(imageData);
 
       // Initialize WebGL
@@ -326,8 +328,8 @@
       // Set up quad
       const positionBuffer = createQuadBuffer();
 
-      // Create textures
-      const textures = {
+      // Create textures and framebuffers globally
+      textures = {
         original: createTexture(imageData.width, imageData.height),
         temp1: createTexture(imageData.width, imageData.height),
         temp2: createTexture(imageData.width, imageData.height),
@@ -336,8 +338,7 @@
       gl.bindTexture(gl.TEXTURE_2D, textures.original);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas1);
 
-      // Create framebuffers
-      const framebuffers = {
+      framebuffers = {
         temp1: createFramebuffer(textures.temp1),
         temp2: createFramebuffer(textures.temp2),
         processed: createFramebuffer(textures.processed)
