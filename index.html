@@ -9,24 +9,57 @@
       font-family: Arial, sans-serif;
       text-align: center;
       margin: 20px;
+      background-color: #f5f5f5;
     }
     canvas {
       border: 1px solid #333;
       margin: 10px;
-      max-width: 100%;
+      max-width: 45%;
+      vertical-align: top;
     }
     button, input {
       margin: 5px;
-      padding: 5px 10px;
+      padding: 8px 15px;
+      font-size: 14px;
+      cursor: pointer;
     }
     #controls {
       margin: 20px auto;
-      max-width: 500px;
+      max-width: 600px;
       text-align: left;
+      background: #fff;
+      padding: 15px;
+      border-radius: 8px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
     }
     #controls label {
       display: inline-block;
-      width: 150px;
+      width: 180px;
+      font-weight: bold;
+    }
+    #controls div {
+      margin: 10px 0;
+    }
+    #loading {
+      display: none;
+      font-size: 18px;
+      color: #3498db;
+      margin-top: 20px;
+    }
+    #comparison {
+      position: relative;
+      display: inline-block;
+    }
+    #comparison input[type="range"] {
+      position: absolute;
+      width: 100%;
+      top: 50%;
+      transform: translateY(-50%);
+      opacity: 0.8;
+    }
+    .disabled {
+      opacity: 0.5;
+      pointer-events: none;
     }
   </style>
 </head>
@@ -34,7 +67,9 @@
   <h1>Apple-Like Image Processing</h1>
   <input type="file" id="fileInput" accept="image/*">
   <button id="processButton">Process Image</button>
-  <button id="downloadButton">Download Processed Image</button>
+  <button id="downloadButton" class="disabled">Download Processed Image</button>
+  <button id="resetButton">Reset Parameters</button>
+  <label><input type="checkbox" id="realtimeCheckbox"> Real-time Preview</label>
 
   <div id="controls">
     <div>
@@ -52,40 +87,80 @@
       <input type="range" id="unsharpInput" min="0.5" max="3.0" step="0.1" value="1.5">
       <span id="unsharpValue">1.5</span>
     </div>
+    <div>
+      <label for="blurSigmaInput">Blur Sigma:</label>
+      <input type="range" id="blurSigmaInput" min="0.1" max="5.0" step="0.1" value="1.0">
+      <span id="blurSigmaValue">1.0</span>
+    </div>
+    <div>
+      <label for="gammaInput">Gamma Correction:</label>
+      <input type="range" id="gammaInput" min="0.1" max="3.0" step="0.1" value="1.0">
+      <span id="gammaValue">1.0</span>
+    </div>
   </div>
 
   <div>
     <h2>Original Image</h2>
     <canvas id="canvas1"></canvas>
-  </div>
-  <div>
     <h2>Processed Image</h2>
-    <canvas id="canvas2"></canvas>
+    <div id="comparison">
+      <canvas id="canvas2"></canvas>
+      <input type="range" id="compareSlider" min="0" max="100" value="100" style="display: none;">
+    </div>
   </div>
+  <div id="loading">Processing...</div>
 
   <script>
+    // Constants
+    const DEFAULTS = {
+      SIGMA_D: 1.5,
+      SIGMA_C: 0.1,
+      UNSHARP_AMOUNT: 1.5,
+      BLUR_SIGMA: 1.0,
+      GAMMA: 1.0
+    };
+    const MAX_PREVIEW_SIZE = 1024; // Limit preview size for performance
+
+    // DOM Elements
     const fileInput = document.getElementById('fileInput');
     const processButton = document.getElementById('processButton');
     const downloadButton = document.getElementById('downloadButton');
+    const resetButton = document.getElementById('resetButton');
+    const realtimeCheckbox = document.getElementById('realtimeCheckbox');
     const canvas1 = document.getElementById('canvas1');
     const canvas2 = document.getElementById('canvas2');
-    const ctx1 = canvas1.getContext('2d');
-    let gl, programBilateral, programBlur, programUnsharp, programColor;
+    const loading = document.getElementById('loading');
+    const compareSlider = document.getElementById('compareSlider');
+    const controls = {
+      sigmaD: { input: document.getElementById('sigmaDInput'), value: document.getElementById('sigmaDValue') },
+      sigmaC: { input: document.getElementById('sigmaCInput'), value: document.getElementById('sigmaCValue') },
+      unsharp: { input: document.getElementById('unsharpInput'), value: document.getElementById('unsharpValue') },
+      blurSigma: { input: document.getElementById('blurSigmaInput'), value: document.getElementById('blurSigmaValue') },
+      gamma: { input: document.getElementById('gammaInput'), value: document.getElementById('gammaValue') }
+    };
 
-    // Get controls and display elements
-    const sigmaDInput = document.getElementById('sigmaDInput');
-    const sigmaCInput = document.getElementById('sigmaCInput');
-    const unsharpInput = document.getElementById('unsharpInput');
-    const sigmaDValue = document.getElementById('sigmaDValue');
-    const sigmaCValue = document.getElementById('sigmaCValue');
-    const unsharpValue = document.getElementById('unsharpValue');
+    let gl, programs = {}, originalImage, processingTimeout;
 
-    // Update display values when sliders change
-    sigmaDInput.addEventListener('input', () => { sigmaDValue.textContent = sigmaDInput.value; });
-    sigmaCInput.addEventListener('input', () => { sigmaCValue.textContent = sigmaCInput.value; });
-    unsharpInput.addEventListener('input', () => { unsharpValue.textContent = unsharpInput.value; });
+    // Initialize UI
+    Object.keys(controls).forEach(key => {
+      const { input, value } = controls[key];
+      input.addEventListener('input', () => {
+        value.textContent = input.value;
+        if (realtimeCheckbox.checked && originalImage) debounceProcess();
+      });
+    });
 
-    // Vertex shader source (used for all passes)
+    resetButton.addEventListener('click', () => {
+      controls.sigmaD.input.value = DEFAULTS.SIGMA_D;
+      controls.sigmaC.input.value = DEFAULTS.SIGMA_C;
+      controls.unsharp.input.value = DEFAULTS.UNSHARP_AMOUNT;
+      controls.blurSigma.input.value = DEFAULTS.BLUR_SIGMA;
+      controls.gamma.input.value = DEFAULTS.GAMMA;
+      Object.values(controls).forEach(({ input, value }) => value.textContent = input.value);
+      if (originalImage) processImage();
+    });
+
+    // Vertex shader
     const vertexShaderSrc = `
       attribute vec2 a_position;
       attribute vec2 a_texCoord;
@@ -96,7 +171,7 @@
       }
     `;
 
-    // Fragment shader for bilateral filter
+    // Fragment shaders
     const bilateralFragSrc = `
       precision mediump float;
       uniform sampler2D u_texture;
@@ -126,68 +201,86 @@
       }
     `;
 
-    // Fragment shader for Gaussian blur
     const blurFragSrc = `
       precision mediump float;
       uniform sampler2D u_texture;
       uniform vec2 u_texSize;
+      uniform float u_sigma;
       varying vec2 v_texCoord;
       void main() {
         vec4 sum = vec4(0.0);
         float totalWeight = 0.0;
-        float sigma = 1.0;
-        float dFactor = 1.0 / (2.0 * sigma * sigma);
+        float dFactor = 1.0 / (2.0 * u_sigma * u_sigma);
         for (int i = -2; i <= 2; i++) {
-          for (int j = -2; j <= 2; j++) {
-            vec2 offset = vec2(float(i), float(j)) / u_texSize;
-            float d = float(i * i + j * j);
-            float weight = exp(-d * dFactor);
-            sum += texture2D(u_texture, v_texCoord + offset) * weight;
-            totalWeight += weight;
-          }
+          vec2 offset = vec2(float(i), 0.0) / u_texSize;
+          float d = float(i * i);
+          float weight = exp(-d * dFactor);
+          sum += texture2D(u_texture, v_texCoord + offset) * weight;
+          totalWeight += weight;
         }
         gl_FragColor = sum / totalWeight;
       }
     `;
 
-    // Fragment shader for unsharp mask
     const unsharpFragSrc = `
       precision mediump float;
-      uniform sampler2D u_original; // Bilateral filtered
-      uniform sampler2D u_blurred;  // Blurred version
+      uniform sampler2D u_original;
+      uniform sampler2D u_blurred;
       uniform float u_amount;
       varying vec2 v_texCoord;
       void main() {
         vec4 orig = texture2D(u_original, v_texCoord);
         vec4 blur = texture2D(u_blurred, v_texCoord);
-        gl_FragColor = orig + u_amount * (orig - blur);
+        gl_FragColor = clamp(orig + u_amount * (orig - blur), 0.0, 1.0);
       }
     `;
 
-    // Fragment shader for color correction
     const colorFragSrc = `
       precision mediump float;
       uniform sampler2D u_texture;
       uniform vec3 u_minVal;
       uniform vec3 u_maxVal;
+      uniform float u_gamma;
       varying vec2 v_texCoord;
       void main() {
         vec4 color = texture2D(u_texture, v_texCoord);
         vec3 corrected = clamp((color.rgb - u_minVal) / (u_maxVal - u_minVal), 0.0, 1.0);
+        corrected = pow(corrected, vec3(1.0 / u_gamma));
         gl_FragColor = vec4(corrected, color.a);
+      }
+    `;
+
+    const compareFragSrc = `
+      precision mediump float;
+      uniform sampler2D u_original;
+      uniform sampler2D u_processed;
+      uniform float u_split;
+      varying vec2 v_texCoord;
+      void main() {
+        if (v_texCoord.x < u_split) {
+          gl_FragColor = texture2D(u_original, v_texCoord);
+        } else {
+          gl_FragColor = texture2D(u_processed, v_texCoord);
+        }
       }
     `;
 
     // Load image
     fileInput.addEventListener('change', (e) => {
       const file = e.target.files[0];
+      if (!file) return;
       const reader = new FileReader();
       reader.onload = (event) => {
         const img = new Image();
         img.onload = () => {
-          canvas1.width = img.width;
-          canvas1.height = img.height;
-          ctx1.drawImage(img, 0, 0);
+          const { width, height } = scaleDimensions(img.width, img.height, MAX_PREVIEW_SIZE);
+          canvas1.width = width;
+          canvas1.height = height;
+          canvas1.getContext('2d').drawImage(img, 0, 0, width, height);
+          originalImage = img;
+          processImage();
+          downloadButton.classList.remove('disabled');
+          compareSlider.style.display = 'block';
         };
         img.src = event.target.result;
       };
@@ -195,17 +288,27 @@
     });
 
     // Process image
-    processButton.addEventListener('click', () => {
-      const imageData = ctx1.getImageData(0, 0, canvas1.width, canvas1.height);
-      if (!imageData) return;
+    processButton.addEventListener('click', () => originalImage && processImage());
+    function debounceProcess() {
+      clearTimeout(processingTimeout);
+      processingTimeout = setTimeout(processImage, 300);
+    }
 
-      // Compute histogram-based min/max for color correction
+    function processImage() {
+      if (!originalImage) {
+        alert('Please upload an image first.');
+        return;
+      }
+
+      loading.style.display = 'block';
+      const imageData = canvas1.getContext('2d').getImageData(0, 0, canvas1.width, canvas1.height);
       const { min, max } = computeMinMax(imageData);
 
       // Initialize WebGL
-      gl = canvas2.getContext('webgl');
+      gl = canvas2.getContext('webgl', { preserveDrawingBuffer: true });
       if (!gl) {
         alert('WebGL not supported');
+        loading.style.display = 'none';
         return;
       }
       canvas2.width = imageData.width;
@@ -213,95 +316,86 @@
       gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
 
       // Compile shaders
-      programBilateral = createProgram(vertexShaderSrc, bilateralFragSrc);
-      programBlur = createProgram(vertexShaderSrc, blurFragSrc);
-      programUnsharp = createProgram(vertexShaderSrc, unsharpFragSrc);
-      programColor = createProgram(vertexShaderSrc, colorFragSrc);
+      programs.bilateral = createProgram(vertexShaderSrc, bilateralFragSrc);
+      programs.blurH = createProgram(vertexShaderSrc, blurFragSrc);
+      programs.blurV = createProgram(vertexShaderSrc, blurFragSrc.replace('vec2(float(i), 0.0)', 'vec2(0.0, float(i))'));
+      programs.unsharp = createProgram(vertexShaderSrc, unsharpFragSrc);
+      programs.color = createProgram(vertexShaderSrc, colorFragSrc);
+      programs.compare = createProgram(vertexShaderSrc, compareFragSrc);
 
       // Set up quad
-      const positionBuffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-        -1, -1,  0, 0,
-         1, -1,  1, 0,
-        -1,  1,  0, 1,
-        -1,  1,  0, 1,
-         1, -1,  1, 0,
-         1,  1,  1, 1
-      ]), gl.STATIC_DRAW);
+      const positionBuffer = createQuadBuffer();
 
       // Create textures
-      const texA = createTexture(imageData.width, imageData.height);
-      const texB = createTexture(imageData.width, imageData.height);
-      gl.bindTexture(gl.TEXTURE_2D, texA);
+      const textures = {
+        original: createTexture(imageData.width, imageData.height),
+        temp1: createTexture(imageData.width, imageData.height),
+        temp2: createTexture(imageData.width, imageData.height),
+        processed: createTexture(imageData.width, imageData.height)
+      };
+      gl.bindTexture(gl.TEXTURE_2D, textures.original);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas1);
 
       // Create framebuffers
-      const fbA = gl.createFramebuffer();
-      gl.bindFramebuffer(gl.FRAMEBUFFER, fbA);
-      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texA, 0);
+      const framebuffers = {
+        temp1: createFramebuffer(textures.temp1),
+        temp2: createFramebuffer(textures.temp2),
+        processed: createFramebuffer(textures.processed)
+      };
 
-      const fbB = gl.createFramebuffer();
-      gl.bindFramebuffer(gl.FRAMEBUFFER, fbB);
-      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texB, 0);
-
-      // Processing pipeline
       const texSize = [imageData.width, imageData.height];
 
-      // Step 1: Bilateral filter (texA -> texB)
-      gl.bindFramebuffer(gl.FRAMEBUFFER, fbB);
-      gl.useProgram(programBilateral);
-      setupAttributes(programBilateral, positionBuffer);
-      gl.uniform1i(gl.getUniformLocation(programBilateral, 'u_texture'), 0);
-      gl.uniform2fv(gl.getUniformLocation(programBilateral, 'u_texSize'), texSize);
-      gl.uniform1f(gl.getUniformLocation(programBilateral, 'u_sigmaD'), parseFloat(sigmaDInput.value));
-      gl.uniform1f(gl.getUniformLocation(programBilateral, 'u_sigmaC'), parseFloat(sigmaCInput.value));
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      // Pipeline
+      renderPass(programs.bilateral, textures.original, framebuffers.temp1, {
+        u_texSize: texSize,
+        u_sigmaD: parseFloat(controls.sigmaD.input.value),
+        u_sigmaC: parseFloat(controls.sigmaC.input.value)
+      });
 
-      // Step 2: Gaussian blur (texB -> texA)
-      gl.bindFramebuffer(gl.FRAMEBUFFER, fbA);
-      gl.useProgram(programBlur);
-      setupAttributes(programBlur, positionBuffer);
-      gl.uniform1i(gl.getUniformLocation(programBlur, 'u_texture'), 0);
-      gl.uniform2fv(gl.getUniformLocation(programBlur, 'u_texSize'), texSize);
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      renderPass(programs.blurH, textures.temp1, framebuffers.temp2, {
+        u_texSize: texSize,
+        u_sigma: parseFloat(controls.blurSigma.input.value)
+      });
 
-      // Step 3: Unsharp mask (texB and texA -> texB)
-      gl.bindFramebuffer(gl.FRAMEBUFFER, fbB);
-      gl.useProgram(programUnsharp);
-      setupAttributes(programUnsharp, positionBuffer);
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, texB);
-      gl.uniform1i(gl.getUniformLocation(programUnsharp, 'u_original'), 0);
-      gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, texA);
-      gl.uniform1i(gl.getUniformLocation(programUnsharp, 'u_blurred'), 1);
-      gl.uniform1f(gl.getUniformLocation(programUnsharp, 'u_amount'), parseFloat(unsharpInput.value));
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      renderPass(programs.blurV, textures.temp2, framebuffers.temp1, {
+        u_texSize: texSize,
+        u_sigma: parseFloat(controls.blurSigma.input.value)
+      });
 
-      // Step 4: Color correction (texB -> texA)
-      gl.bindFramebuffer(gl.FRAMEBUFFER, fbA);
-      gl.useProgram(programColor);
-      setupAttributes(programColor, positionBuffer);
-      gl.uniform1i(gl.getUniformLocation(programColor, 'u_texture'), 0);
-      gl.uniform3fv(gl.getUniformLocation(programColor, 'u_minVal'), min);
-      gl.uniform3fv(gl.getUniformLocation(programColor, 'u_maxVal'), max);
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      renderPass(programs.unsharp, null, framebuffers.temp2, {
+        u_original: textures.temp1,
+        u_blurred: textures.temp1,
+        u_amount: parseFloat(controls.unsharp.input.value)
+      }, [0, 1]);
 
-      // Final render to canvas
-      // IMPORTANT: Bind the final processed texture (texA) to avoid a feedback loop error.
+      renderPass(programs.color, textures.temp2, framebuffers.processed, {
+        u_minVal: min,
+        u_maxVal: max,
+        u_gamma: parseFloat(controls.gamma.input.value)
+      });
+
+      // Final render with comparison
+      compareSlider.oninput = () => renderComparison();
+      renderComparison();
+
+      loading.style.display = 'none';
+    }
+
+    function renderComparison() {
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.useProgram(programs.compare);
+      setupAttributes(programs.compare);
       gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, texA);
-      gl.useProgram(programColor); // Reuse color program for final render
-      setupAttributes(programColor, positionBuffer);
-      gl.uniform1i(gl.getUniformLocation(programColor, 'u_texture'), 0);
-      gl.uniform3fv(gl.getUniformLocation(programColor, 'u_minVal'), [0, 0, 0]);
-      gl.uniform3fv(gl.getUniformLocation(programColor, 'u_maxVal'), [1, 1, 1]);
+      gl.bindTexture(gl.TEXTURE_2D, textures.original);
+      gl.uniform1i(gl.getUniformLocation(programs.compare, 'u_original'), 0);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, textures.processed);
+      gl.uniform1i(gl.getUniformLocation(programs.compare, 'u_processed'), 1);
+      gl.uniform1f(gl.getUniformLocation(programs.compare, 'u_split'), compareSlider.value / 100);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
-    });
+    }
 
-    // Download the processed image
+    // Download
     downloadButton.addEventListener('click', () => {
       const dataURL = canvas2.toDataURL('image/png');
       const link = document.createElement('a');
@@ -348,15 +442,51 @@
       return texture;
     }
 
-    function setupAttributes(program, buffer) {
+    function createFramebuffer(texture) {
+      const fb = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+      return fb;
+    }
+
+    function createQuadBuffer() {
+      const buffer = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        -1, -1, 0, 0,
+         1, -1, 1, 0,
+        -1,  1, 0, 1,
+        -1,  1, 0, 1,
+         1, -1, 1, 0,
+         1,  1, 1, 1
+      ]), gl.STATIC_DRAW);
+      return buffer;
+    }
+
+    function setupAttributes(program) {
       const posLoc = gl.getAttribLocation(program, 'a_position');
       gl.enableVertexAttribArray(posLoc);
       gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 16, 0);
       const texLoc = gl.getAttribLocation(program, 'a_texCoord');
       gl.enableVertexAttribArray(texLoc);
       gl.vertexAttribPointer(texLoc, 2, gl.FLOAT, false, 16, 8);
-      // Note: We no longer bind a texture here to avoid conflicts.
+    }
+
+    function renderPass(program, inputTexture, framebuffer, uniforms, textureUnits = [0]) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+      gl.useProgram(program);
+      setupAttributes(program);
+      textureUnits.forEach((unit, idx) => {
+        gl.activeTexture(gl.TEXTURE0 + unit);
+        gl.bindTexture(gl.TEXTURE_2D, inputTexture && idx === 0 ? inputTexture : Object.values(uniforms)[idx]);
+        gl.uniform1i(gl.getUniformLocation(program, Object.keys(uniforms)[idx]), unit);
+      });
+      Object.entries(uniforms).forEach(([name, value]) => {
+        if (name.startsWith('u_texSize')) gl.uniform2fv(gl.getUniformLocation(program, name), value);
+        else if (name.startsWith('u_min') || name.startsWith('u_max')) gl.uniform3fv(gl.getUniformLocation(program, name), value);
+        else if (!name.match(/u_(original|blurred|texture)/)) gl.uniform1f(gl.getUniformLocation(program, name), value);
+      });
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
 
     function computeMinMax(imageData) {
@@ -384,6 +514,13 @@
         }
       }
       return { min: min.map(v => v / 255), max: max.map(v => v / 255) };
+    }
+
+    function scaleDimensions(width, height, maxSize) {
+      if (width <= maxSize && height <= maxSize) return { width, height };
+      const aspect = width / height;
+      if (width > height) return { width: maxSize, height: Math.round(maxSize / aspect) };
+      return { width: Math.round(maxSize * aspect), height: maxSize };
     }
   </script>
 </body>
