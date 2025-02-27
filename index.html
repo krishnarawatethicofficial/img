@@ -254,7 +254,6 @@
       setupAttributes(programBilateral, positionBuffer);
       gl.uniform1i(gl.getUniformLocation(programBilateral, 'u_texture'), 0);
       gl.uniform2fv(gl.getUniformLocation(programBilateral, 'u_texSize'), texSize);
-      // Use slider values for bilateral filter parameters
       gl.uniform1f(gl.getUniformLocation(programBilateral, 'u_sigmaD'), parseFloat(sigmaDInput.value));
       gl.uniform1f(gl.getUniformLocation(programBilateral, 'u_sigmaC'), parseFloat(sigmaCInput.value));
       gl.drawArrays(gl.TRIANGLES, 0, 6);
@@ -290,8 +289,11 @@
       gl.drawArrays(gl.TRIANGLES, 0, 6);
 
       // Final render to canvas
+      // IMPORTANT: Bind the final processed texture (texA) to avoid a feedback loop error.
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      gl.useProgram(programColor); // Reuse color program for simplicity
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, texA);
+      gl.useProgram(programColor); // Reuse color program for final render
       setupAttributes(programColor, positionBuffer);
       gl.uniform1i(gl.getUniformLocation(programColor, 'u_texture'), 0);
       gl.uniform3fv(gl.getUniformLocation(programColor, 'u_minVal'), [0, 0, 0]);
@@ -354,8 +356,7 @@
       const texLoc = gl.getAttribLocation(program, 'a_texCoord');
       gl.enableVertexAttribArray(texLoc);
       gl.vertexAttribPointer(texLoc, 2, gl.FLOAT, false, 16, 8);
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, null);
+      // Note: We no longer bind a texture here to avoid conflicts.
     }
 
     function computeMinMax(imageData) {
