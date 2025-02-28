@@ -132,6 +132,11 @@
       <input type="range" id="gammaInput" min="0.1" max="3.0" step="0.1" value="1.0" />
       <span id="gammaValue">1.0</span>
     </div>
+    <div>
+      <label for="contrastInput">Contrast:</label>
+      <input type="range" id="contrastInput" min="0.5" max="2.0" step="0.1" value="1.0" />
+      <span id="contrastValue">1.0</span>
+    </div>
   </div>
 
   <div class="canvas-container">
@@ -156,7 +161,8 @@
       SIGMA_C: 0.1,
       UNSHARP_AMOUNT: 1.5,
       BLUR_SIGMA: 1.0,
-      GAMMA: 1.0
+      GAMMA: 1.0,
+      CONTRAST: 1.0
     };
     const MAX_PREVIEW_SIZE = 1024;
 
@@ -175,11 +181,11 @@
       sigmaC: { input: document.getElementById('sigmaCInput'), value: document.getElementById('sigmaCValue') },
       unsharp: { input: document.getElementById('unsharpInput'), value: document.getElementById('unsharpValue') },
       blurSigma: { input: document.getElementById('blurSigmaInput'), value: document.getElementById('blurSigmaValue') },
-      gamma: { input: document.getElementById('gammaInput'), value: document.getElementById('gammaValue') }
+      gamma: { input: document.getElementById('gammaInput'), value: document.getElementById('gammaValue') },
+      contrast: { input: document.getElementById('contrastInput'), value: document.getElementById('contrastValue') }
     };
 
     let gl, programs = {}, originalImage, processingTimeout;
-    // Declare textures and framebuffers globally
     let textures, framebuffers;
 
     // Initialize UI
@@ -197,6 +203,7 @@
       controls.unsharp.input.value = DEFAULTS.UNSHARP_AMOUNT;
       controls.blurSigma.input.value = DEFAULTS.BLUR_SIGMA;
       controls.gamma.input.value = DEFAULTS.GAMMA;
+      controls.contrast.input.value = DEFAULTS.CONTRAST;
       Object.values(controls).forEach(({ input, value }) => value.textContent = input.value);
       if (originalImage) processImage();
     });
@@ -219,21 +226,22 @@
       uniform vec2 u_texSize;
       uniform float u_sigmaD;
       uniform float u_sigmaC;
+      uniform float u_spatialWeights[5];
       varying vec2 v_texCoord;
       void main() {
         vec4 center = texture2D(u_texture, v_texCoord);
         vec4 sum = vec4(0.0);
         float totalWeight = 0.0;
-        float dFactor = 1.0 / (2.0 * u_sigmaD * u_sigmaD);
         float cFactor = 1.0 / (2.0 * u_sigmaC * u_sigmaC);
-        for (int i = -2; i <= 2; i++) {
-          for (int j = -2; j <= 2; j++) {
+        int radius = 2;
+        for (int i = -radius; i <= radius; i++) {
+          for (int j = -radius; j <= radius; j++) {
             vec2 offset = vec2(float(i), float(j)) / u_texSize;
             vec4 neighbor = texture2D(u_texture, v_texCoord + offset);
-            float d = float(i * i + j * j);
             vec3 colorDiff = center.rgb - neighbor.rgb;
             float c = dot(colorDiff, colorDiff);
-            float weight = exp(-d * dFactor) * exp(-c * cFactor);
+            float spatialWeight = u_spatialWeights[i + radius] * u_spatialWeights[j + radius];
+            float weight = spatialWeight * exp(-c * cFactor);
             sum += neighbor * weight;
             totalWeight += weight;
           }
@@ -247,19 +255,16 @@
       uniform sampler2D u_texture;
       uniform vec2 u_texSize;
       uniform float u_sigma;
+      uniform float u_weights[5];
       varying vec2 v_texCoord;
       void main() {
         vec4 sum = vec4(0.0);
-        float totalWeight = 0.0;
-        float dFactor = 1.0 / (2.0 * u_sigma * u_sigma);
+        vec2 direction = vec2(1.0, 0.0) / u_texSize;
         for (int i = -2; i <= 2; i++) {
-          vec2 offset = vec2(float(i), 0.0) / u_texSize;
-          float d = float(i * i);
-          float weight = exp(-d * dFactor);
-          sum += texture2D(u_texture, v_texCoord + offset) * weight;
-          totalWeight += weight;
+          vec2 offset = direction * float(i);
+          sum += texture2D(u_texture, v_texCoord + offset) * u_weights[i + 2];
         }
-        gl_FragColor = sum / totalWeight;
+        gl_FragColor = sum;
       }
     `;
 
@@ -282,10 +287,13 @@
       uniform vec3 u_minVal;
       uniform vec3 u_maxVal;
       uniform float u_gamma;
+      uniform float u_contrast;
       varying vec2 v_texCoord;
       void main() {
         vec4 color = texture2D(u_texture, v_texCoord);
-        vec3 corrected = clamp((color.rgb - u_minVal) / (u_maxVal - u_minVal), 0.0, 1.0);
+        vec3 normalized = clamp((color.rgb - u_minVal) / (u_maxVal - u_minVal), 0.0, 1.0);
+        vec3 contrasted = (normalized - 0.5) * u_contrast + 0.5;
+        vec3 corrected = clamp(contrasted, 0.0, 1.0);
         corrected = pow(corrected, vec3(1.0 / u_gamma));
         gl_FragColor = vec4(corrected, color.a);
       }
@@ -328,55 +336,68 @@
       reader.readAsDataURL(file);
     });
 
-    processButton.addEventListener("click", () => originalImage && processImage());
+    processButton.addEventListener("click", () => originalImage && processImage(true));
     function debounceProcess() {
       clearTimeout(processingTimeout);
-      processingTimeout = setTimeout(processImage, 300);
+      processingTimeout = setTimeout(() => processImage(false), 300);
     }
 
-    function processImage() {
+    function processImage(fullResolution = false) {
       if (!originalImage) {
         alert("Please upload an image first.");
         return;
       }
       loading.style.display = "block";
       const ctx = canvas1.getContext("2d", { willReadFrequently: true });
-      const imageData = ctx.getImageData(0, 0, canvas1.width, canvas1.height);
-      const { min, max } = computeMinMax(imageData);
+      let width = canvas1.width;
+      let height = canvas1.height;
+      let imageData;
+      const useProxy = !fullResolution && realtimeCheckbox.checked;
 
-      // Initialize WebGL
+      if (useProxy) {
+        const proxySize = MAX_PREVIEW_SIZE / 2;
+        const { width: w, height: h } = scaleDimensions(canvas1.width, canvas1.height, proxySize);
+        width = w;
+        height = h;
+        const proxyCanvas = document.createElement("canvas");
+        proxyCanvas.width = width;
+        proxyCanvas.height = height;
+        proxyCanvas.getContext("2d").drawImage(canvas1, 0, 0, width, height);
+        canvas2.width = width;
+        canvas2.height = height;
+        imageData = proxyCanvas.getContext("2d").getImageData(0, 0, width, height);
+      } else {
+        canvas2.width = canvas1.width;
+        canvas2.height = canvas1.height;
+        imageData = ctx.getImageData(0, 0, canvas1.width, canvas1.height);
+      }
+
+      const { min, max } = computeMinMax(imageData);
       gl = canvas2.getContext("webgl", { preserveDrawingBuffer: true });
       if (!gl) {
         alert("WebGL not supported");
         loading.style.display = "none";
         return;
       }
-      canvas2.width = imageData.width;
-      canvas2.height = imageData.height;
       gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
 
-      // Compile shaders/programs
       programs.bilateral = createProgram(vertexShaderSrc, bilateralFragSrc);
       programs.blurH = createProgram(vertexShaderSrc, blurFragSrc);
-      programs.blurV = createProgram(vertexShaderSrc, blurFragSrc.replace("vec2(float(i), 0.0)", "vec2(0.0, float(i))"));
+      programs.blurV = createProgram(vertexShaderSrc, blurFragSrc.replace("vec2(1.0, 0.0)", "vec2(0.0, 1.0)"));
       programs.unsharp = createProgram(vertexShaderSrc, unsharpFragSrc);
       programs.color = createProgram(vertexShaderSrc, colorFragSrc);
       programs.compare = createProgram(vertexShaderSrc, compareFragSrc);
 
       const positionBuffer = createQuadBuffer();
-
-      // Create textures and framebuffers globally.
       textures = {
-        original: createTexture(imageData.width, imageData.height),
-        temp1: createTexture(imageData.width, imageData.height),
-        temp2: createTexture(imageData.width, imageData.height),
-        processed: createTexture(imageData.width, imageData.height)
+        original: createTexture(width, height),
+        temp1: createTexture(width, height),
+        temp2: createTexture(width, height),
+        processed: createTexture(width, height)
       };
-
-      // Flip Y when uploading the original texture.
       gl.bindTexture(gl.TEXTURE_2D, textures.original);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas1);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, useProxy ? proxyCanvas : canvas1);
 
       framebuffers = {
         temp1: createFramebuffer(textures.temp1),
@@ -384,21 +405,27 @@
         processed: createFramebuffer(textures.processed)
       };
 
-      const texSize = [imageData.width, imageData.height];
+      const texSize = [width, height];
+      const sigmaD = parseFloat(controls.sigmaD.input.value);
+      const sigmaBlur = parseFloat(controls.blurSigma.input.value);
+      const spatialWeights = computeGaussianWeights(sigmaD);
+      const blurWeights = computeGaussianWeights(sigmaBlur);
 
-      // Processing pipeline:
       renderPass(programs.bilateral, textures.original, framebuffers.temp1, {
         u_texSize: texSize,
-        u_sigmaD: parseFloat(controls.sigmaD.input.value),
-        u_sigmaC: parseFloat(controls.sigmaC.input.value)
+        u_sigmaD: sigmaD,
+        u_sigmaC: parseFloat(controls.sigmaC.input.value),
+        u_spatialWeights: spatialWeights
       });
       renderPass(programs.blurH, textures.temp1, framebuffers.temp2, {
         u_texSize: texSize,
-        u_sigma: parseFloat(controls.blurSigma.input.value)
+        u_sigma: sigmaBlur,
+        u_weights: blurWeights
       });
-      renderPass(programs.blurV, textures.temp2, framebuffers.temp1, {
+      renderPass(programs.blurV, textures.temp2, framebuffers.processed, {
         u_texSize: texSize,
-        u_sigma: parseFloat(controls.blurSigma.input.value)
+        u_sigma: sigmaBlur,
+        u_weights: blurWeights
       });
       renderPass(
         programs.unsharp,
@@ -406,7 +433,7 @@
         framebuffers.temp2,
         {
           u_original: textures.temp1,
-          u_blurred: textures.temp1,
+          u_blurred: textures.processed,
           u_amount: parseFloat(controls.unsharp.input.value)
         },
         [0, 1]
@@ -414,10 +441,10 @@
       renderPass(programs.color, textures.temp2, framebuffers.processed, {
         u_minVal: min,
         u_maxVal: max,
-        u_gamma: parseFloat(controls.gamma.input.value)
+        u_gamma: parseFloat(controls.gamma.input.value),
+        u_contrast: parseFloat(controls.contrast.input.value)
       });
 
-      // Final render with comparison
       compareSlider.oninput = () => renderComparison();
       renderComparison();
       loading.style.display = "none";
@@ -530,12 +557,15 @@
         gl.uniform1i(gl.getUniformLocation(program, Object.keys(uniforms)[idx]), unit);
       });
       Object.entries(uniforms).forEach(([name, value]) => {
-        if (name.startsWith("u_texSize"))
+        if (name === "u_texSize") {
           gl.uniform2fv(gl.getUniformLocation(program, name), value);
-        else if (name.startsWith("u_min") || name.startsWith("u_max"))
+        } else if (name === "u_minVal" || name === "u_maxVal") {
           gl.uniform3fv(gl.getUniformLocation(program, name), value);
-        else if (!name.match(/u_(original|blurred|texture)/))
+        } else if (name === "u_spatialWeights" || name === "u_weights") {
+          gl.uniform1fv(gl.getUniformLocation(program, name), value);
+        } else if (!name.match(/u_(original|blurred|texture)/)) {
           gl.uniform1f(gl.getUniformLocation(program, name), value);
+        }
       });
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
@@ -572,6 +602,19 @@
       const aspect = width / height;
       if (width > height) return { width: maxSize, height: Math.round(maxSize / aspect) };
       return { width: Math.round(maxSize * aspect), height: maxSize };
+    }
+
+    function computeGaussianWeights(sigma, kernelSize = 5) {
+      const weights = new Float32Array(kernelSize);
+      const mean = Math.floor(kernelSize / 2);
+      let sum = 0.0;
+      for (let i = 0; i < kernelSize; i++) {
+        const x = i - mean;
+        weights[i] = Math.exp(-(x * x) / (2 * sigma * sigma));
+        sum += weights[i];
+      }
+      for (let i = 0; i < kernelSize; i++) weights[i] /= sum;
+      return weights;
     }
   </script>
 </body>
